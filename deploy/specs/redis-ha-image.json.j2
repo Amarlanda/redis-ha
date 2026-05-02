@@ -1,0 +1,17 @@
+{
+  "name": "redis-ha-image",
+  "type": "docker-image",
+  "git_repos": [
+    {
+      "url": "https://github.com/Amarlanda/redis-ha.git",
+      "dest": "/Users/pulumi-admin/git/pers/redis-ha",
+      "branch": "main"
+    }
+  ],
+  "source_dir": "/Users/pulumi-admin/git/pers/redis-ha",
+  "dockerfile": "images/redis-ha/Dockerfile",
+  "build_context": "images/redis-ha",
+  "image_tag": "{{ images['redis-ha'] | default('ghcr.io/amarlanda/redis-ha:7-v0.1.0') }}",
+  "registry_push_enabled": true,
+  "group": "Image registry (ghcr.io)"
+}
