@@ -1,0 +1,26 @@
+{
+  "name": "redis-ha",
+  "type": "docker",
+  "image": "{{ images['redis-ha'] | default('ghcr.io/amarlanda/redis-ha:7-v0.1.0') }}",
+  "container_name": "ldn-redis-ha",
+  "network": "ldn-lan",
+  "replica_ips": [{{ ips['redis-ha-0'] | tojson }}, {{ ips['redis-ha-1'] | tojson }}],
+  "_replica_ips_note": "Index 0 = primary, index 1 = standby. Orchestrator's promoteCore reorders Job.Nodes so REPLICA_INDEX=0 lands on the new primary, and updateRedisHaPrimaryDNS flips primary.redis-ha.service.london → replica_ips[0] on every promotion. Mirrors postgres-ha exactly.",
+  "volumes": [
+    {"source": "/Users/pulumi-admin/redis-ha-{% raw %}{{REPLICA_INDEX}}{% endraw %}", "target": "/data"}
+  ],
+  "env": {
+    "REDIS_PASSWORD": "{{ vault_redis_password }}"
+  },
+  "consul_port": 6379,
+  "group": "Data",
+  "replicas": 2,
+  "anti_affinity_self": true,
+  "health_probe": {
+    "tcp": "{{ ips['redis-ha-0'] }}:6379",
+    "interval": 30,
+    "timeout": 5,
+    "retries": 3
+  },
+  "resources": {{ resources['redis-ha'] | tojson }}
+}

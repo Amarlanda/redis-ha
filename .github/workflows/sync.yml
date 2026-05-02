@@ -1,0 +1,120 @@
+name: sync to cluster
+# Renders + pushes redis-ha to the cluster on push to main, mirrors
+# the cv-stack pattern.
+#
+# Triggers:
+# - push to main: deploys "prod" if any spec template / stack values
+#   / sync code changed.
+# - workflow_dispatch: manual deploy of a named stack.
+# - repository_dispatch (event_type: deploy-stack): n8n / external
+#   trigger via GitHub API.
+#
+# Required secrets: DEPLOY_RUNNER_TOKEN, VAULT_REDIS_PASSWORD.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: 'Stack name (must exist as stacks/<name>.yaml)'
+        required: false
+        default: 'prod'
+  repository_dispatch:
+    types: [deploy-stack]
+
+jobs:
+  resolve-stack:
+    runs-on: ubuntu-latest
+    outputs:
+      stack: ${{ steps.pick.outputs.stack }}
+      should_deploy: ${{ steps.pick.outputs.should_deploy }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
+      - id: pick
+        run: |
+          case "${{ github.event_name }}" in
+            workflow_dispatch)
+              stack='${{ inputs.stack }}'; should=true ;;
+            repository_dispatch)
+              stack='${{ github.event.client_payload.stack }}'; should=true ;;
+            push)
+              stack='prod'
+              if git diff --name-only HEAD~1 HEAD | grep -qE '^(deploy/specs/|stacks/prod\.yaml|bin/render-stack\.py|bin/deploy-stack\.sh|\.github/workflows/sync\.yml)'; then
+                should=true
+              else
+                should=false
+              fi
+              ;;
+            *) stack='prod'; should=false ;;
+          esac
+          [[ -z "$stack" ]] && stack='prod'
+          echo "stack=$stack" >> "$GITHUB_OUTPUT"
+          echo "should_deploy=$should" >> "$GITHUB_OUTPUT"
+          echo "::notice::stack='$stack' should_deploy='$should'"
+
+  deploy-stack:
+    needs: resolve-stack
+    if: needs.resolve-stack.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install Python deps
+        run: pip install pyyaml jinja2
+
+      - name: Render + push stack
+        env:
+          DEPLOY_HOST: https://deploy-m3.amarlanda.com
+          DEPLOY_RUNNER_TOKEN: ${{ secrets.DEPLOY_RUNNER_TOKEN }}
+          # Override the empty default in render-stack.py with the
+          # actual vault value pulled from a GH Actions secret. This
+          # is the structural fix to the empty-password bug that
+          # previously bit cv-stack langgraph-api: CI doesn't have
+          # ansible-vault, so secrets must come from GH Actions.
+          VAULT_REDIS_PASSWORD: ${{ secrets.VAULT_REDIS_PASSWORD }}
+        run: |
+          stack='${{ needs.resolve-stack.outputs.stack }}'
+          echo "→ render stack '$stack'"
+          mkdir -p out
+          python3 bin/render-stack.py "$stack" --output-dir out
+
+          echo
+          echo "→ /sync-spec (writes deploy-runner/services/<name>)"
+          for f in out/*.json; do
+            name=$(basename "$f" .json)
+            echo -n "  $name ... "
+            curl -sf -X POST \
+              -H "Authorization: Bearer $DEPLOY_RUNNER_TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "User-Agent: redis-ha-ci/${{ github.run_id }}" \
+              --data-binary @"$f" \
+              "$DEPLOY_HOST/sync-spec/$name" > /dev/null && echo "ok" || { echo "FAIL"; exit 1; }
+          done
+
+          echo
+          echo "→ /scheduler-job (writes london-scheduler/jobs/<name>)"
+          for f in out/*.json; do
+            name=$(basename "$f" .json)
+            echo -n "  $name ... "
+            curl -sf -X POST \
+              -H "Authorization: Bearer $DEPLOY_RUNNER_TOKEN" \
+              -H "User-Agent: redis-ha-ci/${{ github.run_id }}" \
+              "$DEPLOY_HOST/scheduler-job/$name" > /dev/null && echo "ok" || { echo "FAIL"; exit 1; }
+          done
+
+          echo
+          echo "→ /dns-register (writes primary.<svc>.service.london via dns-ucg-svc)"
+          for f in out/*.json; do
+            name=$(basename "$f" .json)
+            echo -n "  $name ... "
+            curl -sf -X POST \
+              -H "Authorization: Bearer $DEPLOY_RUNNER_TOKEN" \
+              -H "User-Agent: redis-ha-ci/${{ github.run_id }}" \
+              "$DEPLOY_HOST/dns-register/$name" > /dev/null && echo "ok" || echo "FAIL (best-effort)"
+          done
+
+          echo
+          echo "✓ stack '$stack' fully synced + registered."

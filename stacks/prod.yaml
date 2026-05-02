@@ -1,0 +1,42 @@
+# prod stack — the canonical redis-ha cluster.
+#
+# Single-template, multi-replica deploy. The spec declares
+# `replicas: 2` + `anti_affinity_self: true` so the orchestrator
+# places the two replicas on different hosts automatically.
+#
+# To create another redis-ha cluster (e.g. for an isolated test
+# tenant), copy this to stacks/<name>.yaml, change `stack:` to your
+# new name, then `./bin/deploy-stack.sh <name>`. Container/job names
+# stay `redis-ha` because the spec hardcodes the name — for a fully
+# separate cluster you'd also fork the spec to use a different name.
+
+stack: prod
+
+# Primary placement hint. The orchestrator picks the standby host via
+# anti-affinity (won't co-locate replicas of the same job).
+nodes:
+  redis-ha: mini-3
+
+# Per-replica resource budget. Same shape as Kubernetes
+# requests/limits. cpu MUST be quoted (string) — see the comment in
+# cv-stack/stacks/prod.yaml for why bare ints break Job unmarshal.
+resources:
+  redis-ha:
+    requests: { memory: 128Mi, cpu: 100m }
+    limits:   { memory: 1Gi,   cpu: "1" }
+
+# Optional image override. If absent, the spec falls back to
+# ghcr.io/amarlanda/redis-ha:7-v0.1.0 (the built-in default).
+images: {}
+
+# Per-replica IPs. Empty string → render-stack.py allocates via
+# deploy-runner /allocate-ip (idempotent: same name returns the same
+# IP across runs). Once allocated, you can lock the values in by
+# pasting them back here.
+#
+# Why two IPs: the spec's `replica_ips: [primary, standby]` array is
+# what the orchestrator uses to flip primary.redis-ha.service.london
+# on promotion (see _replica_ips_note in the template).
+ips:
+  redis-ha-0: ""
+  redis-ha-1: ""
