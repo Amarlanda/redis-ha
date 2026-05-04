@@ -17,7 +17,7 @@
   "replicas": 2,
   "anti_affinity_self": true,
   "health_probe": {
-    "tcp": "{{ ips['redis-ha-0'] }}:6379",
+    "tcp": "primary.redis-ha.service.london:6379",
     "interval": 30,
     "timeout": 5,
     "retries": 3
